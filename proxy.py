@@ -51,7 +51,7 @@ MODEL_ALIASES = {
     "coder": "deepseek/deepseek-v4-pro",
 }
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 tracker = UsageTracker(DB_PATH)
 _balance_cache: dict[str, Any] = {"ts": 0.0, "data": None}
 _BALANCE_TTL = 30.0
@@ -194,6 +194,26 @@ async def api_usage_realtime(
     }
 
 
+@app.get("/api/v1/usage/series")
+async def api_usage_series(
+    authorization: str | None = Header(default=None),
+    period: str = Query("day", pattern="^(day|month|year)$"),
+    limit: int | None = Query(None, ge=1, le=500),
+    model: str | None = Query(None, description="Filter by exact model id"),
+) -> dict[str, Any]:
+    """Historical series from SQLite: period=day|month|year (UTC buckets)."""
+    _auth_metrics(authorization)
+    try:
+        series = tracker.series(period=period, limit=limit, model=model)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ts": time.time(),
+        "proxy_version": VERSION,
+        **series,
+    }
+
+
 @app.get("/api/v1/optimization")
 async def api_optimization(
     authorization: str | None = Header(default=None),
@@ -240,6 +260,7 @@ async def api_monitor(
         "links": {
             "prometheus": "/metrics",
             "realtime": "/api/v1/usage/realtime",
+            "series": "/api/v1/usage/series?period=day",
             "balance": "/api/v1/balance",
             "health": "/health",
         },

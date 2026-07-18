@@ -223,6 +223,89 @@ class UsageTracker:
             "recent": recent_dicts,
         }
 
+    def series(
+        self,
+        period: str = "day",
+        *,
+        limit: int | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate stored history into day | month | year buckets (UTC)."""
+        period = (period or "day").lower().strip()
+        fmt_map = {
+            "day": ("%Y-%m-%d", 90),
+            "month": ("%Y-%m", 36),
+            "year": ("%Y", 10),
+        }
+        if period not in fmt_map:
+            raise ValueError("period must be day, month, or year")
+        strftime_fmt, default_limit = fmt_map[period]
+        if limit is None:
+            limit = default_limit
+        limit = max(1, min(int(limit), 500))
+
+        sql = f"""
+            SELECT
+                strftime('{strftime_fmt}', ts, 'unixepoch') AS bucket,
+                COUNT(*) AS requests,
+                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                COALESCE(SUM(cost_usd), 0.0) AS cost_usd,
+                COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0) AS errors
+            FROM usage_events
+        """
+        params: list[Any] = []
+        if model:
+            sql += " WHERE model = ?"
+            params.append(model)
+        sql += """
+            GROUP BY bucket
+            ORDER BY bucket DESC
+            LIMIT ?
+        """
+        params.append(limit)
+
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(sql, params).fetchall()
+
+        points = [
+            {
+                "bucket": r["bucket"],
+                "requests": int(r["requests"]),
+                "prompt_tokens": int(r["prompt_tokens"]),
+                "completion_tokens": int(r["completion_tokens"]),
+                "reasoning_tokens": int(r["reasoning_tokens"]),
+                "total_tokens": int(r["total_tokens"]),
+                "cost_usd": round(float(r["cost_usd"]), 8),
+                "errors": int(r["errors"]),
+            }
+            for r in rows
+        ]
+        # Chronological for charts (oldest → newest)
+        points.reverse()
+
+        totals = {
+            "requests": sum(p["requests"] for p in points),
+            "prompt_tokens": sum(p["prompt_tokens"] for p in points),
+            "completion_tokens": sum(p["completion_tokens"] for p in points),
+            "reasoning_tokens": sum(p["reasoning_tokens"] for p in points),
+            "total_tokens": sum(p["total_tokens"] for p in points),
+            "cost_usd": round(sum(p["cost_usd"] for p in points), 8),
+            "errors": sum(p["errors"] for p in points),
+        }
+        return {
+            "period": period,
+            "timezone": "UTC",
+            "limit": limit,
+            "model": model,
+            "points": points,
+            "totals": totals,
+            "point_count": len(points),
+        }
+
     def prometheus(self, balance: dict[str, Any] | None = None) -> str:
         snap = self.snapshot()
         lines: list[str] = []
