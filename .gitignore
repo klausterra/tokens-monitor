@@ -1,0 +1,13 @@
+config.env
+.env
+data/
+*.db
+__pycache__/
+.venv/
+venv/
+*.pyc
+credentials.json
+tunnel*.log
+tunnel-url*.txt
+*.lf
+config.env.lxc

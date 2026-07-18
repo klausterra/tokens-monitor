@@ -1,0 +1,15 @@
+[Unit]
+Description=tokens-monitor OpenRouter proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tokens-monitor
+EnvironmentFile=/opt/tokens-monitor/config.env
+ExecStart=/opt/tokens-monitor/.venv/bin/python /opt/tokens-monitor/proxy.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
