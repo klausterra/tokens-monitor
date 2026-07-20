@@ -13,6 +13,7 @@ Built for environments where Cursor BYOK + OpenRouter is unreliable: this proxy 
 - `/api/v1/monitor` envelope + `/metrics` Prometheus
 - Configurable **guardrails** (guardrails.json + PUT /api/v1/guardrails)
 - **Xiaomi MiMo/MaaS** provider (XIAOMI_MAAS_API_KEY, models mimo-v2.5*)
+- **Huawei Cloud MaaS** provider (HUAWEI_MAAS_API_KEY, models glm-5 / deepseek-v3.2)
 
 ## Quick start
 

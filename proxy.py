@@ -1,5 +1,5 @@
 """
-OpenAI-compatible multi-provider proxy (OpenRouter + Xiaomi MiMo/MaaS)
+OpenAI-compatible multi-provider proxy (OpenRouter + Xiaomi + Huawei MaaS)
 with usage monitoring and configurable guardrails.
 """
 from __future__ import annotations

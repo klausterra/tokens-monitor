@@ -26,7 +26,7 @@ class GuardrailsConfig:
     allowed_models: list[str] = field(default_factory=list)
     blocked_models: list[str] = field(default_factory=list)
     # Providers: openrouter, xiaomi
-    allowed_providers: list[str] = field(default_factory=lambda: ["openrouter", "xiaomi"])
+    allowed_providers: list[str] = field(default_factory=lambda: ["openrouter", "xiaomi", "huawei"])
     # OpenRouter balance floor (credits remaining)
     min_openrouter_credits: float | None = None
     # Force cheap defaults
