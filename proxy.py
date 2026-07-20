@@ -4,6 +4,8 @@ with usage monitoring and configurable guardrails.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import time
@@ -12,7 +14,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 
 from guardrails import GuardrailEnforcer, estimate_prompt_tokens
 from providers import prepare_route, providers_status, resolve_model
@@ -50,17 +52,53 @@ GUARDRAILS_PATH = Path(
     os.environ.get("GUARDRAILS_PATH", str(ROOT / "guardrails.json"))
 )
 
-VERSION = "1.5.1"
+VERSION = "1.6.0"
 tracker = UsageTracker(DB_PATH)
 guardrails = GuardrailEnforcer(GUARDRAILS_PATH)
 _balance_cache: dict[str, Any] = {"ts": 0.0, "data": None}
 _BALANCE_TTL = 30.0
+# Huawei LiteLLM trial: ~3 requests/minute
+_HUAWEI_RPM = int(os.environ.get("HUAWEI_RPM_LIMIT", "3"))
+_huawei_times: list[float] = []
+_huawei_lock = asyncio.Lock()
 
 app = FastAPI(
     title="tokens-monitor",
     version=VERSION,
     description="Multi-provider BYOK bridge + guardrails + monitoring API",
 )
+
+
+async def _huawei_rate_limit() -> None:
+    """Serialize Huawei calls to respect LiteLLM trial RPM (default 3/min)."""
+    if _HUAWEI_RPM <= 0:
+        return
+    async with _huawei_lock:
+        while True:
+            now = time.time()
+            _huawei_times[:] = [t for t in _huawei_times if now - t < 60.0]
+            if len(_huawei_times) < _HUAWEI_RPM:
+                _huawei_times.append(now)
+                return
+            wait = 60.0 - (now - _huawei_times[0]) + 0.35
+            log.warning("huawei_rate_wait seconds=%.1f queue=%s", wait, len(_huawei_times))
+            await asyncio.sleep(max(wait, 0.5))
+
+
+def _label_from_body(body: dict[str, Any]) -> str:
+    msgs = body.get("messages") or []
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") == "user":
+            c = m.get("content")
+            if isinstance(c, str) and c.strip():
+                return " ".join(c.strip().split())[:120]
+            if isinstance(c, list):
+                for part in c:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        t = str(part.get("text") or "").strip()
+                        if t:
+                            return " ".join(t.split())[:120]
+    return ""
 
 
 def _auth_proxy(authorization: str | None) -> None:
@@ -119,6 +157,10 @@ def _record(
     latency_ms: int,
     status: int,
     usage: dict[str, Any] | None,
+    provider: str = "",
+    error: str = "",
+    label: str = "",
+    client: str = "",
 ) -> None:
     u = usage or {}
     tokens = int(u.get("total_tokens") or 0)
@@ -134,6 +176,10 @@ def _record(
             stream=stream,
             latency_ms=latency_ms,
             status=status,
+            provider=provider,
+            error=error,
+            label=label,
+            client=client,
         )
     )
     guardrails.note_request(tokens or estimate_prompt_tokens([]))
@@ -257,6 +303,44 @@ async def api_usage_series(
     return {"ts": time.time(), "proxy_version": VERSION, **series}
 
 
+@app.get("/api/v1/usage/tasks")
+async def api_usage_tasks(
+    authorization: str | None = Header(default=None),
+    gap_seconds: int = Query(180, ge=30, le=3600),
+    limit: int = Query(50, ge=1, le=200),
+    since_hours: float = Query(48, ge=0.1, le=720),
+) -> dict[str, Any]:
+    _auth_metrics(authorization)
+    return {
+        "ts": time.time(),
+        "proxy_version": VERSION,
+        **tracker.tasks(
+            gap_seconds=gap_seconds, limit=limit, since_hours=since_hours
+        ),
+    }
+
+
+@app.get("/api/v1/usage/events")
+async def api_usage_events(
+    authorization: str | None = Header(default=None),
+    limit: int = Query(100, ge=1, le=500),
+) -> dict[str, Any]:
+    _auth_metrics(authorization)
+    return {
+        "ts": time.time(),
+        "proxy_version": VERSION,
+        "events": tracker.recent_events(limit=limit),
+    }
+
+
+@app.get("/dashboard")
+async def dashboard_page() -> FileResponse:
+    path = ROOT / "static" / "dashboard.html"
+    if not path.exists():
+        raise HTTPException(404, "dashboard.html missing")
+    return FileResponse(path, media_type="text/html; charset=utf-8")
+
+
 @app.get("/api/v1/optimization")
 async def api_optimization(
     authorization: str | None = Header(default=None),
@@ -305,6 +389,9 @@ async def api_monitor(
             "prometheus": "/metrics",
             "realtime": "/api/v1/usage/realtime",
             "series": "/api/v1/usage/series?period=day",
+            "tasks": "/api/v1/usage/tasks",
+            "events": "/api/v1/usage/events",
+            "dashboard": "/dashboard",
             "guardrails": "/api/v1/guardrails",
             "config": "/api/v1/config",
             "balance": "/api/v1/balance",
@@ -380,14 +467,20 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
         raise HTTPException(503, str(exc)) from exc
 
     model = resolve_model(str(raw.get("model") or route.model))
+    label = _label_from_body(raw if isinstance(raw, dict) else {})
+    client_ua = (request.headers.get("user-agent") or "")[:120]
     balance = await _get_balance()
+    # OpenRouter credit guard only when routing to OpenRouter
+    or_remaining = (
+        balance.get("remaining_credits") if route.name == "openrouter" else None
+    )
     ok, code, detail = guardrails.check(
         model=route.model if not model.startswith("xiaomi/") else model,
         provider=route.name,
         body=route.body,
         usage_day_cost=_period_cost("day"),
         usage_month_cost=_period_cost("month"),
-        openrouter_remaining=balance.get("remaining_credits"),
+        openrouter_remaining=or_remaining,
     )
     if not ok:
         log.warning("guardrail_block code=%s detail=%s", code, detail)
@@ -397,14 +490,18 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
                 {"error": {"message": detail, "type": "guardrail", "code": code}},
             )
 
+    if route.name == "huawei":
+        await _huawei_rate_limit()
+
     stream = bool(route.body.get("stream"))
     started = time.time()
     url = f"{route.base_url}/chat/completions"
     log.info(
-        "chat provider=%s model=%s stream=%s",
+        "chat provider=%s model=%s stream=%s label=%s",
         route.name,
         route.model,
         stream,
+        (label or "")[:40],
     )
 
     if stream:
@@ -413,6 +510,7 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
         async def gen():
             usage_acc: dict[str, Any] | None = None
             status = 200
+            err_txt = ""
             try:
                 async with client.stream(
                     "POST", url, headers=route.headers, json=route.body
@@ -420,8 +518,24 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
                     status = resp.status_code
                     if resp.status_code >= 400:
                         err = await resp.aread()
-                        log.error("upstream_stream_error %s", err[:500])
-                        yield err
+                        err_txt = err.decode("utf-8", errors="ignore")[:500]
+                        log.error("upstream_stream_error %s", err_txt[:500])
+                        # Surface JSON error to Cursor instead of opaque bytes
+                        payload = {
+                            "error": {
+                                "message": err_txt
+                                or f"upstream {resp.status_code}",
+                                "type": "upstream_error",
+                                "code": str(resp.status_code),
+                                "provider": route.name,
+                            }
+                        }
+                        yield (
+                            "data: "
+                            + json.dumps(payload, ensure_ascii=False)
+                            + "\n\n"
+                        ).encode()
+                        yield b"data: [DONE]\n\n"
                         return
                     buffer = b""
                     async for chunk in resp.aiter_bytes():
@@ -441,6 +555,10 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
                     latency_ms=int((time.time() - started) * 1000),
                     status=status,
                     usage=usage_acc,
+                    provider=route.name,
+                    error=err_txt,
+                    label=label,
+                    client=client_ua,
                 )
 
         return StreamingResponse(
@@ -454,22 +572,28 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
             },
         )
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=180.0) as client:
         r = await client.post(url, headers=route.headers, json=route.body)
     usage = None
+    err_txt = ""
     if r.status_code < 400:
         try:
             usage = parse_usage_from_openai_payload(r.json())
         except Exception:
             usage = None
     else:
-        log.error("upstream_error status=%s body=%s", r.status_code, r.text[:500])
+        err_txt = r.text[:500]
+        log.error("upstream_error status=%s body=%s", r.status_code, err_txt)
     _record(
         model=f"{route.name}/{route.model}",
         stream=False,
         latency_ms=int((time.time() - started) * 1000),
         status=r.status_code,
         usage=usage,
+        provider=route.name,
+        error=err_txt,
+        label=label,
+        client=client_ua,
     )
     return Response(
         content=r.content,

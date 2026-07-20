@@ -23,6 +23,10 @@ class RequestUsage:
     stream: bool = False
     latency_ms: int = 0
     status: int = 200
+    provider: str = ""
+    error: str = ""
+    label: str = ""
+    client: str = ""
 
 
 @dataclass
@@ -83,10 +87,26 @@ class UsageTracker:
                     cost_usd REAL NOT NULL,
                     stream INTEGER NOT NULL,
                     latency_ms INTEGER NOT NULL,
-                    status INTEGER NOT NULL
+                    status INTEGER NOT NULL,
+                    provider TEXT DEFAULT '',
+                    error TEXT DEFAULT '',
+                    label TEXT DEFAULT '',
+                    client TEXT DEFAULT ''
                 )
                 """
             )
+            cols = {
+                r[1]
+                for r in conn.execute("PRAGMA table_info(usage_events)").fetchall()
+            }
+            for col, typ in (
+                ("provider", "TEXT DEFAULT ''"),
+                ("error", "TEXT DEFAULT ''"),
+                ("label", "TEXT DEFAULT ''"),
+                ("client", "TEXT DEFAULT ''"),
+            ):
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE usage_events ADD COLUMN {col} {typ}")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_events(ts)"
             )
@@ -162,8 +182,9 @@ class UsageTracker:
                     """
                     INSERT INTO usage_events
                     (ts, model, prompt_tokens, completion_tokens, reasoning_tokens,
-                     total_tokens, cost_usd, stream, latency_ms, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     total_tokens, cost_usd, stream, latency_ms, status,
+                     provider, error, label, client)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.ts,
@@ -176,6 +197,10 @@ class UsageTracker:
                         1 if event.stream else 0,
                         event.latency_ms,
                         event.status,
+                        event.provider or "",
+                        (event.error or "")[:500],
+                        (event.label or "")[:200],
+                        (event.client or "")[:120],
                     ),
                 )
 
@@ -305,6 +330,126 @@ class UsageTracker:
             "totals": totals,
             "point_count": len(points),
         }
+
+    def tasks(
+        self,
+        *,
+        gap_seconds: int = 180,
+        limit: int = 50,
+        since_hours: float | None = 48,
+    ) -> dict[str, Any]:
+        """Group requests into Cursor-like 'tasks' by idle gaps (no native task id)."""
+        gap_seconds = max(30, min(int(gap_seconds), 3600))
+        limit = max(1, min(int(limit), 200))
+        params: list[Any] = []
+        sql = """
+            SELECT id, ts, model, prompt_tokens, completion_tokens, reasoning_tokens,
+                   total_tokens, cost_usd, stream, latency_ms, status,
+                   COALESCE(provider,'') AS provider,
+                   COALESCE(error,'') AS error,
+                   COALESCE(label,'') AS label,
+                   COALESCE(client,'') AS client
+            FROM usage_events
+        """
+        if since_hours is not None and since_hours > 0:
+            sql += " WHERE ts >= ?"
+            params.append(time.time() - float(since_hours) * 3600)
+        sql += " ORDER BY ts ASC"
+        with self._lock:
+            with self._connect() as conn:
+                rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+        tasks: list[dict[str, Any]] = []
+        cur: dict[str, Any] | None = None
+        for r in rows:
+            ts = float(r["ts"])
+            if cur is None or ts - float(cur["ended_at"]) > gap_seconds:
+                if cur is not None:
+                    tasks.append(cur)
+                label = (r.get("label") or "").strip() or "Tarefa Cursor"
+                cur = {
+                    "id": f"task-{int(ts)}",
+                    "started_at": ts,
+                    "ended_at": ts,
+                    "label": label[:120],
+                    "requests": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "total_tokens": 0,
+                    "cost_usd": 0.0,
+                    "errors": 0,
+                    "models": {},
+                    "providers": {},
+                    "events": [],
+                }
+            assert cur is not None
+            cur["ended_at"] = ts
+            cur["requests"] += 1
+            cur["prompt_tokens"] += int(r["prompt_tokens"] or 0)
+            cur["completion_tokens"] += int(r["completion_tokens"] or 0)
+            cur["reasoning_tokens"] += int(r["reasoning_tokens"] or 0)
+            cur["total_tokens"] += int(r["total_tokens"] or 0)
+            cur["cost_usd"] += float(r["cost_usd"] or 0)
+            if int(r["status"] or 0) >= 400:
+                cur["errors"] += 1
+            m = r["model"] or "unknown"
+            cur["models"][m] = cur["models"].get(m, 0) + 1
+            p = (r.get("provider") or m.split("/")[0] if "/" in m else "unknown")
+            cur["providers"][p] = cur["providers"].get(p, 0) + 1
+            if (r.get("label") or "").strip() and cur["label"] == "Tarefa Cursor":
+                cur["label"] = str(r["label"])[:120]
+            if len(cur["events"]) < 30:
+                cur["events"].append(
+                    {
+                        "ts": ts,
+                        "model": m,
+                        "tokens": int(r["total_tokens"] or 0),
+                        "status": int(r["status"] or 0),
+                        "latency_ms": int(r["latency_ms"] or 0),
+                        "error": (r.get("error") or "")[:160],
+                    }
+                )
+        if cur is not None:
+            tasks.append(cur)
+
+        # newest first
+        tasks.reverse()
+        tasks = tasks[:limit]
+        for t in tasks:
+            t["duration_seconds"] = max(0, int(t["ended_at"] - t["started_at"]))
+            t["cost_usd"] = round(float(t["cost_usd"]), 8)
+        return {
+            "gap_seconds": gap_seconds,
+            "since_hours": since_hours,
+            "task_count": len(tasks),
+            "tasks": tasks,
+            "note": (
+                "Cursor não envia ID de tarefa; agrupamos requests com pausa "
+                f"> {gap_seconds}s como uma 'tarefa'."
+            ),
+        }
+
+    def recent_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, ts, model, prompt_tokens, completion_tokens,
+                           reasoning_tokens, total_tokens, cost_usd, stream,
+                           latency_ms, status,
+                           COALESCE(provider,'') AS provider,
+                           COALESCE(error,'') AS error,
+                           COALESCE(label,'') AS label,
+                           COALESCE(client,'') AS client
+                    FROM usage_events
+                    ORDER BY ts DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        return [dict(r) for r in rows]
 
     def prometheus(self, balance: dict[str, Any] | None = None) -> str:
         snap = self.snapshot()

@@ -5,6 +5,7 @@ OpenAI-compatible **Cursor â†’ OpenRouter** bridge with **realtime token usage**
 Built for environments where Cursor BYOK + OpenRouter is unreliable: this proxy normalizes requests (forces `reasoning.effort=none` so Cursor does not see empty `content`), tracks usage, and exposes metrics for Homarr / Grafana / n8n / Prometheus.
 
 ## Features
+- Dashboard: /dashboard — consumo por tarefa Cursor
 
 - `/v1/chat/completions` OpenAI-compatible proxy to OpenRouter
 - Realtime usage accounting (SQLite) from non-stream and stream responses

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>tokens-monitor — consumo Cursor</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3d9cf0;
+      --ok: #3ecf8e;
+      --warn: #f0b429;
+      --bad: #f07178;
+      --border: #2a3548;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(1200px 600px at 10% -10%, #1a2a44 0%, var(--bg) 55%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+      justify-content: space-between;
+      padding: 20px 24px; border-bottom: 1px solid var(--border);
+    }
+    h1 { margin: 0; font-size: 1.25rem; font-weight: 650; }
+    .muted { color: var(--muted); font-size: 0.85rem; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    input, select, button {
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 10px; font: inherit;
+    }
+    button { cursor: pointer; background: #243247; }
+    button:hover { border-color: var(--accent); }
+    main { padding: 20px 24px 48px; max-width: 1200px; margin: 0 auto; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px;
+    }
+    .card .v { font-size: 1.35rem; font-weight: 700; margin-top: 4px; }
+    .card .k { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 0.75rem; background: #243247; color: var(--muted);
+    }
+    .badge.ok { color: var(--ok); }
+    .badge.bad { color: var(--bad); }
+    .panel {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 8px 12px; margin-bottom: 16px; overflow: auto;
+    }
+    .err { color: var(--bad); white-space: pre-wrap; font-size: 0.85rem; }
+    details summary { cursor: pointer; color: var(--accent); }
+    .note { margin: 8px 0 16px; color: var(--muted); font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Consumo Cursor · tokens-monitor</h1>
+      <div class="muted" id="subtitle">Agrupado por pausas entre requests (proxy)</div>
+    </div>
+    <div class="row">
+      <input id="token" type="password" placeholder="API key do proxy" style="min-width:220px" />
+      <select id="hours">
+        <option value="6">6h</option>
+        <option value="24" selected>24h</option>
+        <option value="48">48h</option>
+        <option value="168">7 dias</option>
+      </select>
+      <select id="gap">
+        <option value="120">gap 2 min</option>
+        <option value="180" selected>gap 3 min</option>
+        <option value="300">gap 5 min</option>
+      </select>
+      <button id="refresh">Atualizar</button>
+    </div>
+  </header>
+  <main>
+    <div class="cards" id="cards"></div>
+    <p class="note" id="note"></p>
+    <div class="panel">
+      <h2 style="font-size:1rem;margin:8px 4px">Tarefas (agrupadas)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Início</th>
+            <th>Duração</th>
+            <th>Label</th>
+            <th>Req</th>
+            <th>Tokens</th>
+            <th>Erros</th>
+            <th>Modelos</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="tasks"></tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <h2 style="font-size:1rem;margin:8px 4px">Últimos eventos</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Quando</th>
+            <th>Modelo</th>
+            <th>Tokens</th>
+            <th>Status</th>
+            <th>ms</th>
+            <th>Erro</th>
+          </tr>
+        </thead>
+        <tbody id="events"></tbody>
+      </table>
+    </div>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const tokenEl = document.getElementById("token");
+    tokenEl.value = params.get("token") || localStorage.getItem("tm_token") || "sk-local-cursor-proxy";
+
+    function fmtTs(ts) {
+      return new Date(ts * 1000).toLocaleString();
+    }
+    function fmtNum(n) {
+      return Number(n || 0).toLocaleString("pt-BR");
+    }
+    async function api(path) {
+      const token = tokenEl.value.trim();
+      localStorage.setItem("tm_token", token);
+      const r = await fetch(path, { headers: { Authorization: "Bearer " + token } });
+      if (!r.ok) throw new Error(path + " → " + r.status + " " + await r.text());
+      return r.json();
+    }
+    async function load() {
+      const hours = document.getElementById("hours").value;
+      const gap = document.getElementById("gap").value;
+      const [mon, tasks, events] = await Promise.all([
+        api("/api/v1/monitor"),
+        api(`/api/v1/usage/tasks?gap_seconds=${gap}&since_hours=${hours}&limit=40`),
+        api("/api/v1/usage/events?limit=80"),
+      ]);
+      const life = (mon.usage && mon.usage.lifetime) || {};
+      const hw = (mon.providers && mon.providers.huawei) || {};
+      const or = (mon.balance) || {};
+      document.getElementById("cards").innerHTML = [
+        ["Requests", fmtNum(life.requests)],
+        ["Tokens", fmtNum(life.total_tokens)],
+        ["Erros", fmtNum(life.errors)],
+        ["OpenRouter $", (or.remaining_credits ?? "—")],
+        ["Huawei", hw.configured ? "LiteLLM ok" : "off"],
+        ["Tarefas", fmtNum(tasks.task_count)],
+      ].map(([k,v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+      document.getElementById("note").textContent = tasks.note || "";
+      document.getElementById("subtitle").textContent =
+        `v${mon.version || "?"} · ${mon.status || ""} · atualizado ${new Date().toLocaleTimeString()}`;
+
+      const tb = document.getElementById("tasks");
+      tb.innerHTML = (tasks.tasks || []).map(t => {
+        const models = Object.entries(t.models || {}).map(([m,c]) => `${m}×${c}`).join(", ");
+        const ev = (t.events || []).map(e =>
+          `<div>${fmtTs(e.ts)} · ${e.model} · ${e.tokens} tok · ${e.status}${e.error ? " · " + e.error : ""}</div>`
+        ).join("");
+        return `<tr>
+          <td>${fmtTs(t.started_at)}</td>
+          <td>${t.duration_seconds}s</td>
+          <td>${escapeHtml(t.label || "")}</td>
+          <td>${t.requests}</td>
+          <td>${fmtNum(t.total_tokens)}</td>
+          <td><span class="badge ${t.errors ? "bad" : "ok"}">${t.errors}</span></td>
+          <td class="muted">${escapeHtml(models)}</td>
+          <td><details><summary>eventos</summary>${ev || "—"}</details></td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="8" class="muted">Nenhuma tarefa no período</td></tr>`;
+
+      document.getElementById("events").innerHTML = (events.events || []).map(e =>
+        `<tr>
+          <td>${fmtTs(e.ts)}</td>
+          <td>${escapeHtml(e.model)}</td>
+          <td>${fmtNum(e.total_tokens)}</td>
+          <td><span class="badge ${e.status >= 400 ? "bad" : "ok"}">${e.status}</span></td>
+          <td>${e.latency_ms}</td>
+          <td class="err">${escapeHtml(e.error || "")}</td>
+        </tr>`
+      ).join("") || `<tr><td colspan="6" class="muted">Sem eventos</td></tr>`;
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    }
+    document.getElementById("refresh").onclick = () => load().catch(e => alert(e.message));
+    load().catch(e => alert(e.message));
+    setInterval(() => load().catch(() => {}), 30000);
+  </script>
+</body>
+</html>

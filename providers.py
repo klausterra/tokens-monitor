@@ -30,6 +30,14 @@ HUAWEI_LITELLM_MODELS = {
 }
 _HUAWEI_LITELLM_LOWER = {m.lower(): m for m in HUAWEI_LITELLM_MODELS}
 
+def _prefer_huawei_deepseek() -> bool:
+    """When Huawei trial key is set, Cursor's deepseek/* ids go to LiteLLM (not OpenRouter)."""
+    flag = os.environ.get("PREFER_HUAWEI_DEEPSEEK", "1").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return False
+    return bool(_huawei_key())
+
+
 MODEL_ALIASES = {
     "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
     "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
@@ -138,6 +146,21 @@ def _normalize_huawei_model(model: str) -> str:
 
 def resolve_model(model: str | None) -> str:
     m = (model or "unknown").strip()
+    # Prefer Huawei LiteLLM when Cursor still has deepseek/* selected
+    if _prefer_huawei_deepseek():
+        low = m.lower()
+        if low in {
+            "deepseek/deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "chat",
+        }:
+            return "DeepSeek-V4-Flash"
+        if low in {
+            "deepseek/deepseek-v4-pro",
+            "deepseek-v4-pro",
+            "coder",
+        }:
+            return "deepseek-v4-pro"
     return MODEL_ALIASES.get(m, m)
 
 
@@ -150,10 +173,21 @@ def detect_provider(model: str) -> str:
         if bare.startswith(prefix):
             bare = bare[len(prefix) :]
             break
+    # Cursor default ids remapped to Huawei
+    if _prefer_huawei_deepseek() and bare in {
+        "deepseek/deepseek-v4-flash",
+        "deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    }:
+        return "huawei"
     if _huawei_key() and (
         bare.startswith("glm-")
         or bare in _HUAWEI_LITELLM_LOWER
         or model in HUAWEI_LITELLM_MODELS
+        or bare.startswith("deepseek-v")
+        or bare.startswith("deepseek-r")
     ):
         return "huawei"
     if m.startswith(("xiaomi/", "mimo/", "mimo-")):
