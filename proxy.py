@@ -53,51 +53,17 @@ GUARDRAILS_PATH = Path(
     os.environ.get("GUARDRAILS_PATH", str(ROOT / "guardrails.json"))
 )
 
-VERSION = "1.6.1"
+VERSION = "1.6.3"
 tracker = UsageTracker(DB_PATH)
 guardrails = GuardrailEnforcer(GUARDRAILS_PATH)
 _balance_cache: dict[str, Any] = {"ts": 0.0, "data": None}
 _BALANCE_TTL = 30.0
-# Huawei LiteLLM trial: ~3 requests/minute — keep margin (Composer bursts)
-_HUAWEI_RPM = int(os.environ.get("HUAWEI_RPM_LIMIT", "2"))
-_huawei_times: list[float] = []
-_huawei_lock = asyncio.Lock()
-_huawei_inflight = 0
 
 app = FastAPI(
     title="tokens-monitor",
     version=VERSION,
     description="Multi-provider BYOK bridge + guardrails + monitoring API",
 )
-
-
-async def _huawei_rate_limit() -> None:
-    """Serialize Huawei calls to respect LiteLLM trial RPM (default 2/min + 1 inflight)."""
-    global _huawei_inflight
-    if _HUAWEI_RPM <= 0:
-        return
-    async with _huawei_lock:
-        while True:
-            now = time.time()
-            _huawei_times[:] = [t for t in _huawei_times if now - t < 60.0]
-            # Only one Huawei stream at a time (Composer fans out tools)
-            if _huawei_inflight >= 1:
-                log.warning("huawei_wait inflight=%s", _huawei_inflight)
-                await asyncio.sleep(0.75)
-                continue
-            if len(_huawei_times) < _HUAWEI_RPM:
-                _huawei_times.append(now)
-                _huawei_inflight += 1
-                return
-            wait = 60.0 - (now - _huawei_times[0]) + 1.0
-            log.warning("huawei_rate_wait seconds=%.1f queue=%s", wait, len(_huawei_times))
-            await asyncio.sleep(max(wait, 1.0))
-
-
-def _huawei_release() -> None:
-    global _huawei_inflight
-    if _huawei_inflight > 0:
-        _huawei_inflight -= 1
 
 
 def _label_from_body(body: dict[str, Any]) -> str:
@@ -505,9 +471,6 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
                 {"error": {"message": detail, "type": "guardrail", "code": code}},
             )
 
-    if route.name == "huawei":
-        await _huawei_rate_limit()
-
     stream = bool(route.body.get("stream"))
     started = time.time()
     url = f"{route.base_url}/chat/completions"
@@ -522,6 +485,7 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
     if stream:
         client = httpx.AsyncClient(timeout=None)
         rewrite = route.name == "huawei"
+        max_attempts = 4 if route.name == "huawei" else 1
 
         async def gen():
             usage_acc: dict[str, Any] | None = None
@@ -529,77 +493,65 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
             err_txt = ""
             carry = b""
             try:
-                async with client.stream(
-                    "POST", url, headers=route.headers, json=route.body
-                ) as resp:
-                    status = resp.status_code
-                    if resp.status_code >= 400:
-                        err = await resp.aread()
-                        err_txt = err.decode("utf-8", errors="ignore")[:500]
-                        log.error("upstream_stream_error %s", err_txt[:500])
-                        if resp.status_code == 429:
-                            tip = (
-                                "Huawei trial: limite ~3 req/min. "
-                                "Aguarde 1 minuto e use Ask (sem Agent)."
+                for attempt in range(1, max_attempts + 1):
+                    carry = b""
+                    async with client.stream(
+                        "POST", url, headers=route.headers, json=route.body
+                    ) as resp:
+                        status = resp.status_code
+                        if resp.status_code == 429 and attempt < max_attempts:
+                            err = await resp.aread()
+                            err_txt = err.decode("utf-8", errors="ignore")[:500]
+                            wait = 22.0 * attempt
+                            log.warning(
+                                "huawei_429_retry attempt=%s/%s wait=%.0fs",
+                                attempt,
+                                max_attempts,
+                                wait,
                             )
+                            await asyncio.sleep(wait)
+                            continue
+                        if resp.status_code >= 400:
+                            err = await resp.aread()
+                            err_txt = err.decode("utf-8", errors="ignore")[:500]
+                            log.error("upstream_stream_error %s", err_txt[:500])
+                            payload = {
+                                "error": {
+                                    "message": err_txt
+                                    or f"upstream {resp.status_code}",
+                                    "type": "upstream_error",
+                                    "code": str(resp.status_code),
+                                    "provider": route.name,
+                                }
+                            }
                             yield (
                                 "data: "
-                                + json.dumps(
-                                    {
-                                        "id": "rate-limit",
-                                        "object": "chat.completion.chunk",
-                                        "choices": [
-                                            {
-                                                "index": 0,
-                                                "delta": {
-                                                    "role": "assistant",
-                                                    "content": tip,
-                                                },
-                                            }
-                                        ],
-                                    },
-                                    ensure_ascii=False,
-                                )
+                                + json.dumps(payload, ensure_ascii=False)
                                 + "\n\n"
                             ).encode()
-                        payload = {
-                            "error": {
-                                "message": err_txt
-                                or f"upstream {resp.status_code}",
-                                "type": "upstream_error",
-                                "code": str(resp.status_code),
-                                "provider": route.name,
-                            }
-                        }
-                        yield (
-                            "data: "
-                            + json.dumps(payload, ensure_ascii=False)
-                            + "\n\n"
-                        ).encode()
-                        yield b"data: [DONE]\n\n"
-                        return
-                    async for chunk in resp.aiter_bytes():
-                        parse_buf = chunk
-                        while b"\n" in parse_buf:
-                            line, parse_buf = parse_buf.split(b"\n", 1)
-                            text = line.decode("utf-8", errors="ignore")
-                            parsed = parse_usage_from_sse_chunk(text)
-                            if parsed:
-                                usage_acc = parsed
-                        if rewrite:
-                            emit, carry = rewrite_sse_bytes_chunk(chunk, carry)
+                            yield b"data: [DONE]\n\n"
+                            return
+                        async for chunk in resp.aiter_bytes():
+                            parse_buf = chunk
+                            while b"\n" in parse_buf:
+                                line, parse_buf = parse_buf.split(b"\n", 1)
+                                text = line.decode("utf-8", errors="ignore")
+                                parsed = parse_usage_from_sse_chunk(text)
+                                if parsed:
+                                    usage_acc = parsed
+                            if rewrite:
+                                emit, carry = rewrite_sse_bytes_chunk(chunk, carry)
+                                if emit:
+                                    yield emit
+                            else:
+                                yield chunk
+                        if rewrite and carry:
+                            emit, carry = rewrite_sse_bytes_chunk(b"\n", carry)
                             if emit:
                                 yield emit
-                        else:
-                            yield chunk
-                    if rewrite and carry:
-                        emit, carry = rewrite_sse_bytes_chunk(b"\n", carry)
-                        if emit:
-                            yield emit
+                        return
             finally:
                 await client.aclose()
-                if route.name == "huawei":
-                    _huawei_release()
                 _record(
                     model=f"{route.name}/{route.model}",
                     stream=True,
@@ -623,44 +575,55 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
             },
         )
 
-    try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
+    max_attempts = 4 if route.name == "huawei" else 1
+    r: httpx.Response | None = None
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        for attempt in range(1, max_attempts + 1):
             r = await client.post(url, headers=route.headers, json=route.body)
-        usage = None
-        err_txt = ""
-        body_out = r.content
-        if r.status_code < 400:
-            try:
-                data = r.json()
-                if route.name == "huawei":
-                    data = rewrite_openai_message(data)
-                    body_out = json.dumps(data, ensure_ascii=False).encode("utf-8")
-                usage = parse_usage_from_openai_payload(data)
-            except Exception:
-                usage = None
-        else:
-            err_txt = r.text[:500]
-            log.error("upstream_error status=%s body=%s", r.status_code, err_txt)
-        _record(
-            model=f"{route.name}/{route.model}",
-            stream=False,
-            latency_ms=int((time.time() - started) * 1000),
-            status=r.status_code,
-            usage=usage,
-            provider=route.name,
-            error=err_txt,
-            label=label,
-            client=client_ua,
-        )
-        return Response(
-            content=body_out,
-            status_code=r.status_code,
-            media_type="application/json",
-            headers={"X-Provider": route.name},
-        )
-    finally:
-        if route.name == "huawei":
-            _huawei_release()
+            if r.status_code == 429 and attempt < max_attempts:
+                wait = 22.0 * attempt
+                log.warning(
+                    "huawei_429_retry attempt=%s/%s wait=%.0fs",
+                    attempt,
+                    max_attempts,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+                continue
+            break
+    assert r is not None
+    usage = None
+    err_txt = ""
+    body_out = r.content
+    if r.status_code < 400:
+        try:
+            data = r.json()
+            if route.name == "huawei":
+                data = rewrite_openai_message(data)
+                body_out = json.dumps(data, ensure_ascii=False).encode("utf-8")
+            usage = parse_usage_from_openai_payload(data)
+        except Exception:
+            usage = None
+    else:
+        err_txt = r.text[:500]
+        log.error("upstream_error status=%s body=%s", r.status_code, err_txt)
+    _record(
+        model=f"{route.name}/{route.model}",
+        stream=False,
+        latency_ms=int((time.time() - started) * 1000),
+        status=r.status_code,
+        usage=usage,
+        provider=route.name,
+        error=err_txt,
+        label=label,
+        client=client_ua,
+    )
+    return Response(
+        content=body_out,
+        status_code=r.status_code,
+        media_type="application/json",
+        headers={"X-Provider": route.name},
+    )
 
 
 @app.post("/v1/chat/completions")
