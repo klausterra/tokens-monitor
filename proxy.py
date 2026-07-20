@@ -1,5 +1,6 @@
 """
-OpenAI-compatible proxy: Cursor -> OpenRouter, with usage/balance monitoring API.
+OpenAI-compatible multi-provider proxy (OpenRouter + Xiaomi MiMo/MaaS)
+with usage monitoring and configurable guardrails.
 """
 from __future__ import annotations
 
@@ -11,8 +12,10 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
+from guardrails import GuardrailEnforcer, estimate_prompt_tokens
+from providers import prepare_route, providers_status, resolve_model
 from usage_tracker import (
     RequestUsage,
     UsageTracker,
@@ -23,7 +26,7 @@ from usage_tracker import (
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("or-proxy")
+log = logging.getLogger("tokens-monitor")
 
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / "config.env"
@@ -43,62 +46,47 @@ OPENROUTER_BASE = os.environ.get(
     "OPENROUTER_BASE", "https://openrouter.ai/api/v1"
 ).rstrip("/")
 DB_PATH = Path(os.environ.get("USAGE_DB_PATH", str(ROOT / "data" / "usage.db")))
+GUARDRAILS_PATH = Path(
+    os.environ.get("GUARDRAILS_PATH", str(ROOT / "guardrails.json"))
+)
 
-MODEL_ALIASES = {
-    "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
-    "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
-    "chat": "deepseek/deepseek-v4-flash",
-    "coder": "deepseek/deepseek-v4-pro",
-}
-
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 tracker = UsageTracker(DB_PATH)
+guardrails = GuardrailEnforcer(GUARDRAILS_PATH)
 _balance_cache: dict[str, Any] = {"ts": 0.0, "data": None}
 _BALANCE_TTL = 30.0
 
 app = FastAPI(
-    title="OpenRouter Cursor Proxy",
+    title="tokens-monitor",
     version=VERSION,
-    description="BYOK bridge + realtime usage/balance monitoring API",
+    description="Multi-provider BYOK bridge + guardrails + monitoring API",
 )
 
 
 def _auth_proxy(authorization: str | None) -> None:
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(500, "OPENROUTER_API_KEY not configured")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing Bearer token")
     token = authorization.removeprefix("Bearer ").strip()
     if token not in {PROXY_MASTER_KEY, OPENROUTER_API_KEY}:
-        raise HTTPException(401, "Invalid proxy API key")
+        # also accept if only xiaomi configured and master key matches
+        if token != PROXY_MASTER_KEY:
+            raise HTTPException(401, "Invalid proxy API key")
 
 
 def _auth_metrics(authorization: str | None) -> None:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing Bearer token")
     token = authorization.removeprefix("Bearer ").strip()
-    if token not in {METRICS_KEY, PROXY_MASTER_KEY, OPENROUTER_API_KEY}:
+    allowed = {METRICS_KEY, PROXY_MASTER_KEY}
+    if OPENROUTER_API_KEY:
+        allowed.add(OPENROUTER_API_KEY)
+    if token not in allowed:
         raise HTTPException(401, "Invalid metrics API key")
 
 
-def _rewrite_body(body: dict[str, Any]) -> dict[str, Any]:
-    out = dict(body)
-    model = out.get("model")
-    if isinstance(model, str) and model in MODEL_ALIASES:
-        out["model"] = MODEL_ALIASES[model]
-    if "reasoning" not in out:
-        out["reasoning"] = {"effort": "none"}
-    if "include_reasoning" not in out:
-        out["include_reasoning"] = False
-    # Ask OpenRouter to include usage on stream final chunk
-    if out.get("stream") and "stream_options" not in out:
-        out["stream_options"] = {"include_usage": True}
-    for junk in ("prompt_cache_key", "safety_identifier"):
-        out.pop(junk, None)
-    return out
-
-
 async def _get_balance(force: bool = False) -> dict[str, Any]:
+    if not OPENROUTER_API_KEY:
+        return {"configured": False}
     now = time.time()
     if (
         not force
@@ -107,9 +95,21 @@ async def _get_balance(force: bool = False) -> dict[str, Any]:
     ):
         return dict(_balance_cache["data"])
     data = await fetch_openrouter_balance(OPENROUTER_API_KEY, OPENROUTER_BASE)
+    data["configured"] = True
     _balance_cache["ts"] = now
     _balance_cache["data"] = data
     return dict(data)
+
+
+def _period_cost(period: str) -> float:
+    try:
+        series = tracker.series(period=period, limit=1)
+        points = series.get("points") or []
+        if not points:
+            return 0.0
+        return float(points[-1].get("cost_usd") or 0.0)
+    except Exception:
+        return 0.0
 
 
 def _record(
@@ -121,6 +121,7 @@ def _record(
     usage: dict[str, Any] | None,
 ) -> None:
     u = usage or {}
+    tokens = int(u.get("total_tokens") or 0)
     tracker.record(
         RequestUsage(
             ts=time.time(),
@@ -128,23 +129,71 @@ def _record(
             prompt_tokens=int(u.get("prompt_tokens") or 0),
             completion_tokens=int(u.get("completion_tokens") or 0),
             reasoning_tokens=int(u.get("reasoning_tokens") or 0),
-            total_tokens=int(u.get("total_tokens") or 0),
+            total_tokens=tokens,
             cost_usd=float(u.get("cost_usd") or 0.0),
             stream=stream,
             latency_ms=latency_ms,
             status=status,
         )
     )
+    guardrails.note_request(tokens or estimate_prompt_tokens([]))
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "upstream": OPENROUTER_BASE,
         "version": VERSION,
         "usage_db": str(DB_PATH),
+        "providers": providers_status(),
+        "guardrails_enabled": guardrails.cfg.enabled,
     }
+
+
+# ---------- Config / Guardrails ----------
+
+
+@app.get("/api/v1/config")
+async def api_config(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _auth_metrics(authorization)
+    return {
+        "version": VERSION,
+        "public_hostname": os.environ.get("PUBLIC_HOSTNAME", "localhost"),
+        "default_provider": os.environ.get("DEFAULT_PROVIDER", "openrouter"),
+        "providers": providers_status(),
+        "guardrails": guardrails.cfg.to_public_dict(),
+        "guardrails_path": str(GUARDRAILS_PATH),
+    }
+
+
+@app.get("/api/v1/guardrails")
+async def api_guardrails_get(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _auth_metrics(authorization)
+    return {"guardrails": guardrails.cfg.to_public_dict()}
+
+
+@app.put("/api/v1/guardrails")
+async def api_guardrails_put(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _auth_metrics(authorization)
+    patch = await request.json()
+    if not isinstance(patch, dict):
+        raise HTTPException(400, "JSON object required")
+    cfg = guardrails.update(patch)
+    return {"ok": True, "guardrails": cfg.to_public_dict()}
+
+
+@app.post("/api/v1/guardrails/reload")
+async def api_guardrails_reload(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _auth_metrics(authorization)
+    cfg = guardrails.reload()
+    return {"ok": True, "guardrails": cfg.to_public_dict()}
 
 
 # ---------- Monitoring API ----------
@@ -172,9 +221,8 @@ async def api_usage_summary(
         "proxy_version": VERSION,
         "balance": balance,
         "usage": snap,
-        "optimization": [
-            h.__dict__ for h in build_optimization_hints(snap, balance)
-        ],
+        "optimization": [h.__dict__ for h in build_optimization_hints(snap, balance)],
+        "guardrails": guardrails.cfg.to_public_dict(),
     }
 
 
@@ -199,19 +247,14 @@ async def api_usage_series(
     authorization: str | None = Header(default=None),
     period: str = Query("day", pattern="^(day|month|year)$"),
     limit: int | None = Query(None, ge=1, le=500),
-    model: str | None = Query(None, description="Filter by exact model id"),
+    model: str | None = Query(None),
 ) -> dict[str, Any]:
-    """Historical series from SQLite: period=day|month|year (UTC buckets)."""
     _auth_metrics(authorization)
     try:
         series = tracker.series(period=period, limit=limit, model=model)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {
-        "ts": time.time(),
-        "proxy_version": VERSION,
-        **series,
-    }
+    return {"ts": time.time(), "proxy_version": VERSION, **series}
 
 
 @app.get("/api/v1/optimization")
@@ -235,7 +278,6 @@ async def api_monitor(
     authorization: str | None = Header(default=None),
     window_seconds: int = Query(300, ge=30, le=86400),
 ) -> dict[str, Any]:
-    """Single envelope for Grafana/Homarr/n8n/etc."""
     _auth_metrics(authorization)
     snap = tracker.snapshot(window_seconds=window_seconds)
     balance = await _get_balance()
@@ -250,6 +292,8 @@ async def api_monitor(
         "status": status,
         "version": VERSION,
         "hostname": os.environ.get("PUBLIC_HOSTNAME", "localhost"),
+        "providers": providers_status(),
+        "guardrails": guardrails.cfg.to_public_dict(),
         "balance": balance,
         "usage": {
             "window": snap["window"],
@@ -261,6 +305,8 @@ async def api_monitor(
             "prometheus": "/metrics",
             "realtime": "/api/v1/usage/realtime",
             "series": "/api/v1/usage/series?period=day",
+            "guardrails": "/api/v1/guardrails",
+            "config": "/api/v1/config",
             "balance": "/api/v1/balance",
             "health": "/health",
         },
@@ -273,8 +319,9 @@ async def prometheus_metrics(
 ) -> Response:
     _auth_metrics(authorization)
     balance = await _get_balance()
-    body = tracker.prometheus(balance)
-    return PlainTextResponse(body, media_type="text/plain; version=0.0.4")
+    return PlainTextResponse(
+        tracker.prometheus(balance), media_type="text/plain; version=0.0.4"
+    )
 
 
 # ---------- OpenAI-compatible chat ----------
@@ -285,37 +332,65 @@ async def prometheus_metrics(
 @app.get("/cursor/models")
 async def list_models(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     _auth_proxy(authorization)
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.get(
-            f"{OPENROUTER_BASE}/models",
-            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
-        )
-    if r.status_code >= 400:
-        raise HTTPException(r.status_code, r.text)
-    return r.json()
+    data: list[dict[str, Any]] = []
+    if OPENROUTER_API_KEY:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.get(
+                f"{OPENROUTER_BASE}/models",
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+            )
+        if r.status_code < 400:
+            data.extend((r.json().get("data") or []))
+    # Always advertise Xiaomi shortcuts when key present
+    from providers import _xiaomi_key
+
+    if _xiaomi_key():
+        for mid in ("mimo-v2.5", "mimo-v2.5-pro", "xiaomi/mimo-v2.5", "xiaomi/mimo-v2.5-pro"):
+            data.append({"id": mid, "object": "model", "owned_by": "xiaomi"})
+    return {"object": "list", "data": data}
 
 
 async def _proxy_chat(request: Request, authorization: str | None) -> Response:
     _auth_proxy(authorization)
     raw = await request.json()
-    body = _rewrite_body(raw)
-    stream = bool(body.get("stream"))
-    model = str(body.get("model") or "unknown")
-    started = time.time()
-    log.info(
-        "chat model=%s stream=%s messages=%s",
-        model,
-        stream,
-        len(body.get("messages") or []),
-    )
+    force_none = guardrails.cfg.force_reasoning_none
+    try:
+        route = prepare_route(
+            raw,
+            openrouter_key=OPENROUTER_API_KEY,
+            openrouter_base=OPENROUTER_BASE,
+            force_reasoning_none=force_none,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://cursor.com",
-        "X-Title": "Cursor OpenRouter Proxy",
-    }
-    url = f"{OPENROUTER_BASE}/chat/completions"
+    model = resolve_model(str(raw.get("model") or route.model))
+    balance = await _get_balance()
+    ok, code, detail = guardrails.check(
+        model=route.model if not model.startswith("xiaomi/") else model,
+        provider=route.name,
+        body=route.body,
+        usage_day_cost=_period_cost("day"),
+        usage_month_cost=_period_cost("month"),
+        openrouter_remaining=balance.get("remaining_credits"),
+    )
+    if not ok:
+        log.warning("guardrail_block code=%s detail=%s", code, detail)
+        if guardrails.cfg.block_on_guardrail:
+            raise HTTPException(
+                429 if code in {"rpm_exceeded", "tpm_exceeded"} else 403,
+                {"error": {"message": detail, "type": "guardrail", "code": code}},
+            )
+
+    stream = bool(route.body.get("stream"))
+    started = time.time()
+    url = f"{route.base_url}/chat/completions"
+    log.info(
+        "chat provider=%s model=%s stream=%s",
+        route.name,
+        route.model,
+        stream,
+    )
 
     if stream:
         client = httpx.AsyncClient(timeout=None)
@@ -324,7 +399,9 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
             usage_acc: dict[str, Any] | None = None
             status = 200
             try:
-                async with client.stream("POST", url, headers=headers, json=body) as resp:
+                async with client.stream(
+                    "POST", url, headers=route.headers, json=route.body
+                ) as resp:
                     status = resp.status_code
                     if resp.status_code >= 400:
                         err = await resp.aread()
@@ -337,17 +414,14 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
                         buffer += chunk
                         while b"\n" in buffer:
                             line, buffer = buffer.split(b"\n", 1)
-                            try:
-                                text = line.decode("utf-8", errors="ignore")
-                            except Exception:
-                                continue
+                            text = line.decode("utf-8", errors="ignore")
                             parsed = parse_usage_from_sse_chunk(text)
                             if parsed:
                                 usage_acc = parsed
             finally:
                 await client.aclose()
                 _record(
-                    model=model,
+                    model=f"{route.name}/{route.model}",
                     stream=True,
                     latency_ms=int((time.time() - started) * 1000),
                     status=status,
@@ -361,11 +435,12 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
+                "X-Provider": route.name,
             },
         )
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        r = await client.post(url, headers=headers, json=body)
+        r = await client.post(url, headers=route.headers, json=route.body)
     usage = None
     if r.status_code < 400:
         try:
@@ -375,13 +450,18 @@ async def _proxy_chat(request: Request, authorization: str | None) -> Response:
     else:
         log.error("upstream_error status=%s body=%s", r.status_code, r.text[:500])
     _record(
-        model=model,
+        model=f"{route.name}/{route.model}",
         stream=False,
         latency_ms=int((time.time() - started) * 1000),
         status=r.status_code,
         usage=usage,
     )
-    return Response(content=r.content, status_code=r.status_code, media_type="application/json")
+    return Response(
+        content=r.content,
+        status_code=r.status_code,
+        media_type="application/json",
+        headers={"X-Provider": route.name},
+    )
 
 
 @app.post("/v1/chat/completions")
@@ -402,7 +482,6 @@ async def catch_all(
         return await _proxy_chat(request, authorization)
     if path.endswith("models") or path == "models":
         return await list_models(authorization)
-    log.warning("unsupported path=%s method=%s", path, request.method)
     raise HTTPException(404, f"Unsupported path: {path}")
 
 

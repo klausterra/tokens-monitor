@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "max_requests_per_minute": 60,
+  "max_tokens_per_minute": null,
+  "max_cost_usd_per_day": null,
+  "max_cost_usd_per_month": null,
+  "max_prompt_tokens": null,
+  "max_completion_tokens": 8192,
+  "allowed_models": [],
+  "blocked_models": [],
+  "allowed_providers": ["openrouter", "xiaomi"],
+  "min_openrouter_credits": 0.5,
+  "force_reasoning_none": true,
+  "block_on_guardrail": true
+}

@@ -11,6 +11,8 @@ Built for environments where Cursor BYOK + OpenRouter is unreliable: this proxy 
 - OpenRouter credits/balance polling
 - Optimization hints (prefer Flash, prompt-heavy, low credits, …)
 - `/api/v1/monitor` envelope + `/metrics` Prometheus
+- Configurable **guardrails** (guardrails.json + PUT /api/v1/guardrails)
+- **Xiaomi MiMo/MaaS** provider (XIAOMI_MAAS_API_KEY, models mimo-v2.5*)
 
 ## Quick start
 
@@ -34,6 +36,8 @@ Point Cursor:
 | Model | `deepseek/deepseek-v4-flash` |
 
 Expose with Cloudflare Tunnel (or any HTTPS reverse proxy). Cursor rejects `localhost` for custom base URLs.
+
+See also [GUARDRAILS.md](./GUARDRAILS.md).
 
 ## Monitoring
 
