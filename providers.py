@@ -16,6 +16,20 @@ class ProviderRoute:
     body: dict[str, Any]
 
 
+# Exact ids on Huawei research LiteLLM (case-sensitive upstream)
+HUAWEI_LITELLM_MODELS = {
+    "glm-5",
+    "glm-5.1",
+    "glm-5.2",
+    "DeepSeek-V4-Flash",
+    "deepseek-v4-pro",
+    "DeepSeek-V3.2",
+    "DeepSeek-V3",
+    "deepseek-v3.1-terminus",
+    "DeepSeek-R1-250528",
+}
+_HUAWEI_LITELLM_LOWER = {m.lower(): m for m in HUAWEI_LITELLM_MODELS}
+
 MODEL_ALIASES = {
     "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
     "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
@@ -26,12 +40,28 @@ MODEL_ALIASES = {
     "mimo-pro": "mimo-v2.5-pro",
     "xiaomi/mimo-v2.5": "mimo-v2.5",
     "xiaomi/mimo-v2.5-pro": "mimo-v2.5-pro",
-    # Huawei MaaS shortcuts
+    # Huawei Token Service / LiteLLM shortcuts → exact upstream ids
     "glm-5": "glm-5",
+    "glm-5.1": "glm-5.1",
+    "glm-5.2": "glm-5.2",
     "huawei/glm-5": "glm-5",
-    "huawei/deepseek-v3.2": "deepseek-v3.2",
+    "huawei/glm-5.1": "glm-5.1",
+    "huawei/glm-5.2": "glm-5.2",
     "hw/glm-5": "glm-5",
-    "hw/deepseek-v3.2": "deepseek-v3.2",
+    "hw/glm-5.2": "glm-5.2",
+    "huawei/flash": "DeepSeek-V4-Flash",
+    "hw/flash": "DeepSeek-V4-Flash",
+    "huawei/DeepSeek-V4-Flash": "DeepSeek-V4-Flash",
+    "huawei/deepseek-v4-flash": "DeepSeek-V4-Flash",
+    "huawei/pro": "deepseek-v4-pro",
+    "hw/pro": "deepseek-v4-pro",
+    "huawei/deepseek-v4-pro": "deepseek-v4-pro",
+    "huawei/DeepSeek-V3.2": "DeepSeek-V3.2",
+    "huawei/deepseek-v3.2": "DeepSeek-V3.2",
+    "hw/deepseek-v3.2": "DeepSeek-V3.2",
+    "huawei/DeepSeek-V3": "DeepSeek-V3",
+    "huawei/DeepSeek-R1-250528": "DeepSeek-R1-250528",
+    "huawei/deepseek-v3.1-terminus": "deepseek-v3.1-terminus",
 }
 
 
@@ -75,7 +105,11 @@ def _huawei_key() -> str:
 
 
 def _huawei_base() -> str:
-    """OpenAI-compatible base (…/v2 or …/openai/v1)."""
+    """OpenAI-compatible base URL for Huawei.
+
+    Research / Token Service trial uses a LiteLLM gateway (default).
+    Production console keys use ModelArts host (/v2 or /openai/v1).
+    """
     for name in (
         "HUAWEI_MAAS_BASE_URL",
         "HUAWEI_CLOUD_MAAS_BASE_URL",
@@ -84,12 +118,22 @@ def _huawei_base() -> str:
         v = os.environ.get(name, "").strip()
         if v:
             return v.rstrip("/")
-    # Docs (OpenClaw / Getting Started): /v2 ; OpenAI SDK style: /openai/v1
-    style = os.environ.get("HUAWEI_MAAS_API_STYLE", "v2").strip().lower()
-    host = "https://api-ap-southeast-1.modelarts-maas.com"
-    if style in {"openai", "openai/v1", "openai-v1"}:
-        return f"{host}/openai/v1"
-    return f"{host}/v2"
+    style = os.environ.get("HUAWEI_MAAS_API_STYLE", "litellm").strip().lower()
+    if style in {"v2", "openclaw"}:
+        return "https://api-ap-southeast-1.modelarts-maas.com/v2"
+    if style in {"openai", "openai/v1", "openai-v1", "modelarts"}:
+        return "https://api-ap-southeast-1.modelarts-maas.com/openai/v1"
+    # Default: Huawei research LiteLLM Token Service
+    return os.environ.get(
+        "HUAWEI_LITELLM_BASE_URL", "http://176.52.143.34:4000/v1"
+    ).rstrip("/")
+
+
+def _normalize_huawei_model(model: str) -> str:
+    """Map to exact LiteLLM id casing when known."""
+    if model in HUAWEI_LITELLM_MODELS:
+        return model
+    return _HUAWEI_LITELLM_LOWER.get(model.lower(), model)
 
 
 def resolve_model(model: str | None) -> str:
@@ -101,8 +145,16 @@ def detect_provider(model: str) -> str:
     m = model.lower()
     if m.startswith(("huawei/", "hw/", "modelarts/", "hw-maas")):
         return "huawei"
-    # Native Huawei MaaS model ids (when key is present)
-    if _huawei_key() and m in {"glm-5", "glm-5.2", "deepseek-v3.2"}:
+    bare = m
+    for prefix in ("huawei/", "hw/", "modelarts/", "hw-maas-pan/", "hw-maas/"):
+        if bare.startswith(prefix):
+            bare = bare[len(prefix) :]
+            break
+    if _huawei_key() and (
+        bare.startswith("glm-")
+        or bare in _HUAWEI_LITELLM_LOWER
+        or model in HUAWEI_LITELLM_MODELS
+    ):
         return "huawei"
     if m.startswith(("xiaomi/", "mimo/", "mimo-")):
         return "xiaomi"
@@ -132,11 +184,11 @@ def prepare_route(
         "hw/",
         "modelarts/",
         "hw-maas-pan/",
+        "hw-maas/",
     ):
         if upstream_model.lower().startswith(prefix):
             upstream_model = upstream_model[len(prefix) :]
             break
-    out["model"] = upstream_model
     provider = detect_provider(model)
 
     if provider == "xiaomi":
@@ -146,6 +198,7 @@ def prepare_route(
                 "Xiaomi MaaS key not configured "
                 "(XIAOMI_MAAS_API_KEY / XIAOMI_MIMO_API_KEY / MIMO_API_KEY)"
             )
+        out["model"] = upstream_model
         if "max_tokens" in out and "max_completion_tokens" not in out:
             out["max_completion_tokens"] = out.pop("max_tokens")
         out.pop("reasoning", None)
@@ -172,6 +225,8 @@ def prepare_route(
                 "Huawei MaaS key not configured "
                 "(HUAWEI_MAAS_API_KEY / MODELARTS_MAAS_API_KEY)"
             )
+        upstream_model = _normalize_huawei_model(upstream_model)
+        out["model"] = upstream_model
         out.pop("reasoning", None)
         out.pop("include_reasoning", None)
         out.pop("stream_options", None)
@@ -189,6 +244,7 @@ def prepare_route(
         )
 
     # OpenRouter
+    out["model"] = upstream_model
     if not openrouter_key:
         raise RuntimeError("OPENROUTER_API_KEY not configured")
     if force_reasoning_none:
@@ -236,7 +292,8 @@ def providers_status() -> dict[str, Any]:
             "configured": bool(hk),
             "base_url": _huawei_base() if hk else None,
             "key_hint": (hk[:8] + "…") if hk else None,
-            "region": "ap-southeast-1",
+            "style": os.environ.get("HUAWEI_MAAS_API_STYLE", "litellm"),
+            "models": sorted(HUAWEI_LITELLM_MODELS),
         },
         "default_provider": os.environ.get("DEFAULT_PROVIDER", "openrouter"),
     }

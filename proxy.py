@@ -50,7 +50,7 @@ GUARDRAILS_PATH = Path(
     os.environ.get("GUARDRAILS_PATH", str(ROOT / "guardrails.json"))
 )
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 tracker = UsageTracker(DB_PATH)
 guardrails = GuardrailEnforcer(GUARDRAILS_PATH)
 _balance_cache: dict[str, Any] = {"ts": 0.0, "data": None}
@@ -348,12 +348,18 @@ async def list_models(authorization: str | None = Header(default=None)) -> dict[
         for mid in ("mimo-v2.5", "mimo-v2.5-pro", "xiaomi/mimo-v2.5", "xiaomi/mimo-v2.5-pro"):
             data.append({"id": mid, "object": "model", "owned_by": "xiaomi"})
     if _huawei_key():
+        from providers import HUAWEI_LITELLM_MODELS
+
+        for mid in sorted(HUAWEI_LITELLM_MODELS):
+            data.append({"id": mid, "object": "model", "owned_by": "huawei"})
         for mid in (
-            "glm-5",
-            "deepseek-v3.2",
             "huawei/glm-5",
-            "huawei/deepseek-v3.2",
+            "huawei/glm-5.2",
             "hw/glm-5",
+            "huawei/DeepSeek-V4-Flash",
+            "hw/flash",
+            "huawei/deepseek-v4-pro",
+            "hw/pro",
         ):
             data.append({"id": mid, "object": "model", "owned_by": "huawei"})
     return {"object": "list", "data": data}
