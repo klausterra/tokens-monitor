@@ -264,6 +264,8 @@ def prepare_route(
         out.pop("reasoning", None)
         out.pop("include_reasoning", None)
         out.pop("stream_options", None)
+        # LiteLLM rejects `thinking` for these models — stream_rewrite maps reasoning→content
+        out.pop("thinking", None)
         headers = {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
