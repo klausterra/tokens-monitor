@@ -50,7 +50,7 @@ GUARDRAILS_PATH = Path(
     os.environ.get("GUARDRAILS_PATH", str(ROOT / "guardrails.json"))
 )
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 tracker = UsageTracker(DB_PATH)
 guardrails = GuardrailEnforcer(GUARDRAILS_PATH)
 _balance_cache: dict[str, Any] = {"ts": 0.0, "data": None}
@@ -341,12 +341,21 @@ async def list_models(authorization: str | None = Header(default=None)) -> dict[
             )
         if r.status_code < 400:
             data.extend((r.json().get("data") or []))
-    # Always advertise Xiaomi shortcuts when key present
-    from providers import _xiaomi_key
+    # Always advertise Xiaomi / Huawei shortcuts when keys present
+    from providers import _huawei_key, _xiaomi_key
 
     if _xiaomi_key():
         for mid in ("mimo-v2.5", "mimo-v2.5-pro", "xiaomi/mimo-v2.5", "xiaomi/mimo-v2.5-pro"):
             data.append({"id": mid, "object": "model", "owned_by": "xiaomi"})
+    if _huawei_key():
+        for mid in (
+            "glm-5",
+            "deepseek-v3.2",
+            "huawei/glm-5",
+            "huawei/deepseek-v3.2",
+            "hw/glm-5",
+        ):
+            data.append({"id": mid, "object": "model", "owned_by": "huawei"})
     return {"object": "list", "data": data}
 
 
