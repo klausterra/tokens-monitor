@@ -40,6 +40,15 @@ NVIDIA_MODELS = {
     "nvidia/nemotron-3-ultra-550b-a55b:free",
     "nvidia/nemotron-nano-12b-v2-vl:free",
     "nvidia/nemotron-nano-9b-v2:free",
+    # Third-party models hosted on NVIDIA NIMs
+    "meta/llama3-8b-instruct",
+    "meta/llama3-70b-instruct",
+    "mistralai/mistral-7b-instruct-v0.2",
+    "mistralai/mixtral-8x7b-instruct-v0.1",
+    "google/gemma-2-9b",
+    "google/gemma-2-27b",
+    "microsoft/phi-3-mini-128k-instruct",
+    "microsoft/phi-3-medium-128k-instruct",
 }
 
 def _prefer_huawei_deepseek() -> bool:
@@ -100,12 +109,21 @@ MODEL_ALIASES = {
     "nv/super": "nvidia/nemotron-3-super-120b-a12b",
     "nvidia/super": "nvidia/nemotron-3-super-120b-a12b",
     "nemotron-super": "nvidia/nemotron-3-super-120b-a12b",
-    # Additional NIM shortcuts for all public catalog models
+    # Additional NIM shortcuts for all public catalog models (including third‑party)
     "nv/ultra": "nvidia/nemotron-3-ultra-550b-a55b",
     "nv/ultra-free": "nvidia/nemotron-3-ultra-550b-a55b:free",
     "nv/12b-v2-vl": "nvidia/nemotron-nano-12b-v2-vl:free",
     "nv/9b": "nvidia/nemotron-nano-9b-v2:free",
     "nv/12b": "nvidia/nemotron-nano-12b-v2-vl:free",
+    # Third‑party NIM aliases
+    "llama3-8b": "meta/llama3-8b-instruct",
+    "llama3-70b": "meta/llama3-70b-instruct",
+    "mistral-7b": "mistralai/mistral-7b-instruct-v0.2",
+    "mixtral-8x7b": "mistralai/mixtral-8x7b-instruct-v0.1",
+    "gemma-2-9b": "google/gemma-2-9b",
+    "gemma-2-27b": "google/gemma-2-27b",
+    "phi-3-mini": "microsoft/phi-3-mini-128k-instruct",
+    "phi-3-medium": "microsoft/phi-3-medium-128k-instruct",
 }
 
 
