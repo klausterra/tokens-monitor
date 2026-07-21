@@ -34,6 +34,12 @@ _HUAWEI_LITELLM_LOWER = {m.lower(): m for m in HUAWEI_LITELLM_MODELS}
 NVIDIA_MODELS = {
     "nvidia/nemotron-3-nano-30b-a3b",
     "nvidia/nemotron-3-super-120b-a12b",
+    # Additional NIM models currently available on the public catalog
+    "nvidia/nemotron-3.5-content-safety:free",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-nano-12b-v2-vl:free",
+    "nvidia/nemotron-nano-9b-v2:free",
 }
 
 def _prefer_huawei_deepseek() -> bool:
@@ -94,6 +100,12 @@ MODEL_ALIASES = {
     "nv/super": "nvidia/nemotron-3-super-120b-a12b",
     "nvidia/super": "nvidia/nemotron-3-super-120b-a12b",
     "nemotron-super": "nvidia/nemotron-3-super-120b-a12b",
+    # Additional NIM shortcuts for all public catalog models
+    "nv/ultra": "nvidia/nemotron-3-ultra-550b-a55b",
+    "nv/ultra-free": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nv/12b-v2-vl": "nvidia/nemotron-nano-12b-v2-vl:free",
+    "nv/9b": "nvidia/nemotron-nano-9b-v2:free",
+    "nv/12b": "nvidia/nemotron-nano-12b-v2-vl:free",
 }
 
 
