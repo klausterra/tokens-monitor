@@ -75,6 +75,11 @@ MODEL_ALIASES = {
     "hw/deepseek-v3.2": "DeepSeek-V3.2",
     "huawei/DeepSeek-V3": "DeepSeek-V3",
     "huawei/DeepSeek-R1-250528": "DeepSeek-R1-250528",
+    "hw/r1": "DeepSeek-R1-250528",
+    "huawei/r1": "DeepSeek-R1-250528",
+    "r1": "DeepSeek-R1-250528",
+    "DeepSeek-R1": "DeepSeek-R1-250528",
+    "deepseek-r1-250528": "DeepSeek-R1-250528",
     "huawei/deepseek-v3.1-terminus": "deepseek-v3.1-terminus",
 }
 
