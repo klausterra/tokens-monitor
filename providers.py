@@ -56,7 +56,13 @@ MODEL_ALIASES = {
     "huawei/glm-5.1": "glm-5.1",
     "huawei/glm-5.2": "glm-5.2",
     "hw/glm-5": "glm-5",
+    "hw/glm-5.1": "glm-5.1",
     "hw/glm-5.2": "glm-5.2",
+    # OpenRouter catalog ids (Cursor may pick these from /v1/models)
+    "z-ai/glm-5": "glm-5",
+    "z-ai/glm-5.1": "glm-5.1",
+    "z-ai/glm-5.2": "glm-5.2",
+    "z-ai/glm-5-turbo": "glm-5.2",
     "huawei/flash": "DeepSeek-V4-Flash",
     "hw/flash": "DeepSeek-V4-Flash",
     "huawei/DeepSeek-V4-Flash": "DeepSeek-V4-Flash",
@@ -146,8 +152,8 @@ def _normalize_huawei_model(model: str) -> str:
 
 def resolve_model(model: str | None) -> str:
     m = (model or "unknown").strip()
-    # Prefer Huawei LiteLLM when Cursor still has deepseek/* selected
-    if _prefer_huawei_deepseek():
+    # Prefer Huawei LiteLLM when Cursor still has deepseek/* / z-ai/glm* selected
+    if _prefer_huawei_deepseek() or _huawei_key():
         low = m.lower()
         if low in {
             "deepseek/deepseek-v4-flash",
@@ -161,15 +167,37 @@ def resolve_model(model: str | None) -> str:
             "coder",
         }:
             return "deepseek-v4-pro"
-    return MODEL_ALIASES.get(m, m)
+        # OpenRouter Z.ai catalog → Huawei trial GLM
+        if low in MODEL_ALIASES and low.startswith("z-ai/glm"):
+            return MODEL_ALIASES[low]
+        if low.startswith("z-ai/glm-5"):
+            # glm-5.2, glm-5.1, glm-5, turbo → closest trial id
+            if "5.2" in low or "turbo" in low:
+                return "glm-5.2"
+            if "5.1" in low:
+                return "glm-5.1"
+            return "glm-5"
+    return MODEL_ALIASES.get(m, MODEL_ALIASES.get(m.lower(), m))
 
 
 def detect_provider(model: str) -> str:
     m = model.lower()
-    if m.startswith(("huawei/", "hw/", "modelarts/", "hw-maas")):
-        return "huawei"
+    if m.startswith(("huawei/", "hw/", "modelarts/", "hw-maas", "z-ai/glm")):
+        if m.startswith("z-ai/glm") and not _huawei_key():
+            return "openrouter"
+        if m.startswith("z-ai/glm") and _huawei_key():
+            return "huawei"
+        if m.startswith(("huawei/", "hw/", "modelarts/", "hw-maas")):
+            return "huawei"
     bare = m
-    for prefix in ("huawei/", "hw/", "modelarts/", "hw-maas-pan/", "hw-maas/"):
+    for prefix in (
+        "huawei/",
+        "hw/",
+        "modelarts/",
+        "hw-maas-pan/",
+        "hw-maas/",
+        "z-ai/",
+    ):
         if bare.startswith(prefix):
             bare = bare[len(prefix) :]
             break
@@ -219,6 +247,7 @@ def prepare_route(
         "modelarts/",
         "hw-maas-pan/",
         "hw-maas/",
+        "z-ai/",
     ):
         if upstream_model.lower().startswith(prefix):
             upstream_model = upstream_model[len(prefix) :]
