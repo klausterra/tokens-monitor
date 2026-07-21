@@ -53,7 +53,7 @@ GUARDRAILS_PATH = Path(
     os.environ.get("GUARDRAILS_PATH", str(ROOT / "guardrails.json"))
 )
 
-VERSION = "1.6.4"
+VERSION = "1.6.5"
 tracker = UsageTracker(DB_PATH)
 guardrails = GuardrailEnforcer(GUARDRAILS_PATH)
 _balance_cache: dict[str, Any] = {"ts": 0.0, "data": None}
@@ -431,6 +431,9 @@ async def list_models(authorization: str | None = Header(default=None)) -> dict[
             "hw/flash",
             "huawei/deepseek-v4-pro",
             "hw/pro",
+            "DeepSeek-R1-250528",
+            "hw/r1",
+            "huawei/r1",
         ):
             data.append({"id": mid, "object": "model", "owned_by": "huawei"})
     return {"object": "list", "data": data}
