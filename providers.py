@@ -1,4 +1,4 @@
-"""Upstream providers: OpenRouter + Xiaomi MiMo + Huawei Cloud MaaS."""
+"""Upstream providers: OpenRouter + Xiaomi + Huawei MaaS + NVIDIA NIM."""
 from __future__ import annotations
 
 import os
@@ -8,7 +8,7 @@ from typing import Any
 
 @dataclass
 class ProviderRoute:
-    name: str  # openrouter | xiaomi | huawei
+    name: str  # openrouter | xiaomi | huawei | nvidia
     base_url: str
     api_key: str
     model: str
@@ -29,6 +29,12 @@ HUAWEI_LITELLM_MODELS = {
     "DeepSeek-R1-250528",
 }
 _HUAWEI_LITELLM_LOWER = {m.lower(): m for m in HUAWEI_LITELLM_MODELS}
+
+# Common NVIDIA build.nvidia.com / integrate.api models
+NVIDIA_MODELS = {
+    "nvidia/nemotron-3-nano-30b-a3b",
+    "nvidia/nemotron-3-super-120b-a12b",
+}
 
 def _prefer_huawei_deepseek() -> bool:
     """When Huawei trial key is set, Cursor's deepseek/* ids go to LiteLLM (not OpenRouter)."""
@@ -81,6 +87,13 @@ MODEL_ALIASES = {
     "DeepSeek-R1": "DeepSeek-R1-250528",
     "deepseek-r1-250528": "DeepSeek-R1-250528",
     "huawei/deepseek-v3.1-terminus": "deepseek-v3.1-terminus",
+    # NVIDIA NIM / build.nvidia.com
+    "nv/nano": "nvidia/nemotron-3-nano-30b-a3b",
+    "nvidia/nano": "nvidia/nemotron-3-nano-30b-a3b",
+    "nemotron-nano": "nvidia/nemotron-3-nano-30b-a3b",
+    "nv/super": "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia/super": "nvidia/nemotron-3-super-120b-a12b",
+    "nemotron-super": "nvidia/nemotron-3-super-120b-a12b",
 }
 
 
@@ -142,10 +155,30 @@ def _huawei_base() -> str:
         return "https://api-ap-southeast-1.modelarts-maas.com/v2"
     if style in {"openai", "openai/v1", "openai-v1", "modelarts"}:
         return "https://api-ap-southeast-1.modelarts-maas.com/openai/v1"
-    # Default: Huawei research LiteLLM Token Service
     return os.environ.get(
         "HUAWEI_LITELLM_BASE_URL", "http://176.52.143.34:4000/v1"
     ).rstrip("/")
+
+
+def _nvidia_key() -> str:
+    for name in (
+        "NVIDIA_API_KEY",
+        "NVIDIA_NIM_API_KEY",
+        "NVCF_API_KEY",
+        "NGC_API_KEY",
+    ):
+        v = os.environ.get(name, "").strip()
+        if v:
+            return v
+    return ""
+
+
+def _nvidia_base() -> str:
+    for name in ("NVIDIA_BASE_URL", "NVIDIA_NIM_BASE_URL"):
+        v = os.environ.get(name, "").strip()
+        if v:
+            return v.rstrip("/")
+    return "https://integrate.api.nvidia.com/v1"
 
 
 def _normalize_huawei_model(model: str) -> str:
@@ -187,6 +220,11 @@ def resolve_model(model: str | None) -> str:
 
 def detect_provider(model: str) -> str:
     m = model.lower()
+    # NVIDIA NIM / build.nvidia.com (keep nvidia/… ids upstream)
+    if m.startswith(("nvidia/", "nv/", "nemotron-", "nemotron/")):
+        return "nvidia"
+    if m in {x.lower() for x in NVIDIA_MODELS}:
+        return "nvidia"
     if m.startswith(("huawei/", "hw/", "modelarts/", "hw-maas", "z-ai/glm")):
         if m.startswith("z-ai/glm") and not _huawei_key():
             return "openrouter"
@@ -202,6 +240,7 @@ def detect_provider(model: str) -> str:
         "hw-maas-pan/",
         "hw-maas/",
         "z-ai/",
+        "nv/",
     ):
         if bare.startswith(prefix):
             bare = bare[len(prefix) :]
@@ -228,7 +267,7 @@ def detect_provider(model: str) -> str:
     if m.startswith("openrouter/"):
         return "openrouter"
     default = os.environ.get("DEFAULT_PROVIDER", "openrouter").strip().lower()
-    if default in {"openrouter", "xiaomi", "huawei"}:
+    if default in {"openrouter", "xiaomi", "huawei", "nvidia"}:
         return default
     return "openrouter"
 
@@ -253,11 +292,43 @@ def prepare_route(
         "hw-maas-pan/",
         "hw-maas/",
         "z-ai/",
+        "nv/",
     ):
         if upstream_model.lower().startswith(prefix):
             upstream_model = upstream_model[len(prefix) :]
             break
     provider = detect_provider(model)
+
+    if provider == "nvidia":
+        key = _nvidia_key()
+        if not key:
+            raise RuntimeError(
+                "NVIDIA API key not configured "
+                "(NVIDIA_API_KEY / NVIDIA_NIM_API_KEY / NGC_API_KEY)"
+            )
+        # Upstream expects full catalog ids like nvidia/nemotron-…
+        if not upstream_model.lower().startswith("nvidia/"):
+            if upstream_model.lower().startswith("nemotron"):
+                upstream_model = f"nvidia/{upstream_model}"
+            elif model.lower().startswith("nvidia/"):
+                upstream_model = model
+        out["model"] = upstream_model
+        out.pop("reasoning", None)
+        out.pop("include_reasoning", None)
+        out.pop("stream_options", None)
+        out.pop("thinking", None)
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        return ProviderRoute(
+            name="nvidia",
+            base_url=_nvidia_base(),
+            api_key=key,
+            model=upstream_model,
+            headers=headers,
+            body=out,
+        )
 
     if provider == "xiaomi":
         key = _xiaomi_key()
@@ -345,6 +416,7 @@ def prepare_route(
 def providers_status() -> dict[str, Any]:
     xk = _xiaomi_key()
     hk = _huawei_key()
+    nk = _nvidia_key()
     ok = os.environ.get("OPENROUTER_API_KEY", "").strip()
     return {
         "openrouter": {
@@ -364,6 +436,12 @@ def providers_status() -> dict[str, Any]:
             "key_hint": (hk[:8] + "…") if hk else None,
             "style": os.environ.get("HUAWEI_MAAS_API_STYLE", "litellm"),
             "models": sorted(HUAWEI_LITELLM_MODELS),
+        },
+        "nvidia": {
+            "configured": bool(nk),
+            "base_url": _nvidia_base() if nk else None,
+            "key_hint": (nk[:8] + "…") if nk else None,
+            "models": sorted(NVIDIA_MODELS),
         },
         "default_provider": os.environ.get("DEFAULT_PROVIDER", "openrouter"),
     }

@@ -153,6 +153,7 @@
       ]);
       const life = (mon.usage && mon.usage.lifetime) || {};
       const hw = (mon.providers && mon.providers.huawei) || {};
+      const nv = (mon.providers && mon.providers.nvidia) || {};
       const or = (mon.balance) || {};
       document.getElementById("cards").innerHTML = [
         ["Requests", fmtNum(life.requests)],
@@ -160,6 +161,7 @@
         ["Erros", fmtNum(life.errors)],
         ["OpenRouter $", (or.remaining_credits ?? "—")],
         ["Huawei", hw.configured ? "LiteLLM ok" : "off"],
+        ["NVIDIA", nv.configured ? "NIM ok" : "off"],
         ["Tarefas", fmtNum(tasks.task_count)],
       ].map(([k,v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
       document.getElementById("note").textContent = tasks.note || "";

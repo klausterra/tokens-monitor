@@ -30,7 +30,7 @@ curl -s -X POST -H "Authorization: Bearer $METRICS_API_KEY" \
 | `max_cost_usd_per_day` / `_month` | Cap spend (proxy SQLite) |
 | `max_completion_tokens` | Cap `max_tokens` per request |
 | `allowed_models` / `blocked_models` | Exact id or prefix `foo*` |
-| `allowed_providers` | `openrouter`, `xiaomi`, `huawei` |
+| `allowed_providers` | `openrouter`, `xiaomi`, `huawei`, `nvidia` |
 | `min_openrouter_credits` | Block OpenRouter if balance too low |
 | `force_reasoning_none` | OpenRouter: disable thinking |
 | `block_on_guardrail` | If false, only log |

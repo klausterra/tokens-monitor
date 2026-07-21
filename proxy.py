@@ -53,7 +53,7 @@ GUARDRAILS_PATH = Path(
     os.environ.get("GUARDRAILS_PATH", str(ROOT / "guardrails.json"))
 )
 
-VERSION = "1.6.5"
+VERSION = "1.7.0"
 tracker = UsageTracker(DB_PATH)
 guardrails = GuardrailEnforcer(GUARDRAILS_PATH)
 _balance_cache: dict[str, Any] = {"ts": 0.0, "data": None}
@@ -409,8 +409,8 @@ async def list_models(authorization: str | None = Header(default=None)) -> dict[
             )
         if r.status_code < 400:
             data.extend((r.json().get("data") or []))
-    # Always advertise Xiaomi / Huawei shortcuts when keys present
-    from providers import _huawei_key, _xiaomi_key
+    # Always advertise Xiaomi / Huawei / NVIDIA shortcuts when keys present
+    from providers import NVIDIA_MODELS, _huawei_key, _nvidia_key, _xiaomi_key
 
     if _xiaomi_key():
         for mid in ("mimo-v2.5", "mimo-v2.5-pro", "xiaomi/mimo-v2.5", "xiaomi/mimo-v2.5-pro"):
@@ -436,6 +436,18 @@ async def list_models(authorization: str | None = Header(default=None)) -> dict[
             "huawei/r1",
         ):
             data.append({"id": mid, "object": "model", "owned_by": "huawei"})
+    if _nvidia_key():
+        for mid in sorted(NVIDIA_MODELS):
+            data.append({"id": mid, "object": "model", "owned_by": "nvidia"})
+        for mid in (
+            "nv/nano",
+            "nvidia/nano",
+            "nemotron-nano",
+            "nv/super",
+            "nvidia/super",
+            "nemotron-super",
+        ):
+            data.append({"id": mid, "object": "model", "owned_by": "nvidia"})
     return {"object": "list", "data": data}
 
 
