@@ -53,7 +53,7 @@ GUARDRAILS_PATH = Path(
     os.environ.get("GUARDRAILS_PATH", str(ROOT / "guardrails.json"))
 )
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 tracker = UsageTracker(DB_PATH)
 guardrails = GuardrailEnforcer(GUARDRAILS_PATH)
 _balance_cache: dict[str, Any] = {"ts": 0.0, "data": None}
@@ -409,7 +409,7 @@ async def list_models(authorization: str | None = Header(default=None)) -> dict[
             )
         if r.status_code < 400:
             data.extend((r.json().get("data") or []))
-    # Always advertise Xiaomi / Huawei / NVIDIA shortcuts when keys present
+    # Always advertise Xiaomi / Huawei / NVIDIA / OpenRouter shortcuts
     from providers import NVIDIA_MODELS, _huawei_key, _nvidia_key, _xiaomi_key
 
     if _xiaomi_key():
@@ -421,33 +421,52 @@ async def list_models(authorization: str | None = Header(default=None)) -> dict[
         for mid in sorted(HUAWEI_LITELLM_MODELS):
             data.append({"id": mid, "object": "model", "owned_by": "huawei"})
         for mid in (
-            "huawei/glm-5",
-            "huawei/glm-5.1",
-            "huawei/glm-5.2",
             "hw/glm-5",
             "hw/glm-5.1",
             "hw/glm-5.2",
-            "huawei/DeepSeek-V4-Flash",
             "hw/flash",
-            "huawei/deepseek-v4-pro",
             "hw/pro",
-            "DeepSeek-R1-250528",
             "hw/r1",
-            "huawei/r1",
+            "hw/v3",
+            "hw/v3.2",
+            "hw/terminus",
         ):
             data.append({"id": mid, "object": "model", "owned_by": "huawei"})
     if _nvidia_key():
         for mid in sorted(NVIDIA_MODELS):
-            data.append({"id": mid, "object": "model", "owned_by": "nvidia"})
+            if mid.endswith(":free"):
+                data.append({"id": mid, "object": "model", "owned_by": "openrouter"})
+            else:
+                data.append({"id": mid, "object": "model", "owned_by": "nvidia"})
         for mid in (
             "nv/nano",
-            "nvidia/nano",
-            "nemotron-nano",
             "nv/super",
-            "nvidia/super",
-            "nemotron-super",
+            "nv/ultra",
+            "nv/9b",
+            "nv/12b",
+            "nv/llama3-8b",
+            "nv/llama3-70b",
+            "nv/mistral-7b",
+            "nv/mixtral-8x7b",
+            "nv/gemma-2-9b",
+            "nv/gemma-2-27b",
+            "nv/phi-3-mini",
+            "nv/phi-3-medium",
         ):
             data.append({"id": mid, "object": "model", "owned_by": "nvidia"})
+    # OpenRouter explicit aliases (or/)
+    for mid in (
+        "or/flash",
+        "or/pro",
+        "or/r1",
+        "or/glm-5.2",
+        "or/gemma-4-26b",
+        "or/qwen3.5-9b",
+        "or/ultra-free",
+        "or/nano",
+        "or/super",
+    ):
+        data.append({"id": mid, "object": "model", "owned_by": "openrouter"})
     return {"object": "list", "data": data}
 
 

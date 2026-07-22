@@ -60,70 +60,52 @@ def _prefer_huawei_deepseek() -> bool:
 
 
 MODEL_ALIASES = {
-    "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
-    "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+    # ---- Bare shortcuts (Cursor convenience) ----
     "chat": "deepseek/deepseek-v4-flash",
     "coder": "deepseek/deepseek-v4-pro",
-    # Xiaomi
+    "glm-5": "glm-5",
+    "glm-5.1": "glm-5.1",
+    "glm-5.2": "glm-5.2",
+    "r1": "DeepSeek-R1-250528",
+    # ---- Xiaomi ----
     "mimo": "mimo-v2.5",
     "mimo-pro": "mimo-v2.5-pro",
     "xiaomi/mimo-v2.5": "mimo-v2.5",
     "xiaomi/mimo-v2.5-pro": "mimo-v2.5-pro",
-    # Huawei Token Service / LiteLLM shortcuts → exact upstream ids
-    "glm-5": "glm-5",
-    "glm-5.1": "glm-5.1",
-    "glm-5.2": "glm-5.2",
-    "huawei/glm-5": "glm-5",
-    "huawei/glm-5.1": "glm-5.1",
-    "huawei/glm-5.2": "glm-5.2",
+    # ---- Huawei (hw/) ----
     "hw/glm-5": "glm-5",
     "hw/glm-5.1": "glm-5.1",
     "hw/glm-5.2": "glm-5.2",
-    # OpenRouter catalog ids (Cursor may pick these from /v1/models)
-    "z-ai/glm-5": "glm-5",
-    "z-ai/glm-5.1": "glm-5.1",
-    "z-ai/glm-5.2": "glm-5.2",
-    "z-ai/glm-5-turbo": "glm-5.2",
-    "huawei/flash": "DeepSeek-V4-Flash",
     "hw/flash": "DeepSeek-V4-Flash",
-    "huawei/DeepSeek-V4-Flash": "DeepSeek-V4-Flash",
-    "huawei/deepseek-v4-flash": "DeepSeek-V4-Flash",
-    "huawei/pro": "deepseek-v4-pro",
     "hw/pro": "deepseek-v4-pro",
-    "huawei/deepseek-v4-pro": "deepseek-v4-pro",
-    "huawei/DeepSeek-V3.2": "DeepSeek-V3.2",
-    "huawei/deepseek-v3.2": "DeepSeek-V3.2",
-    "hw/deepseek-v3.2": "DeepSeek-V3.2",
-    "huawei/DeepSeek-V3": "DeepSeek-V3",
-    "huawei/DeepSeek-R1-250528": "DeepSeek-R1-250528",
     "hw/r1": "DeepSeek-R1-250528",
-    "huawei/r1": "DeepSeek-R1-250528",
-    "r1": "DeepSeek-R1-250528",
-    "DeepSeek-R1": "DeepSeek-R1-250528",
-    "deepseek-r1-250528": "DeepSeek-R1-250528",
-    "huawei/deepseek-v3.1-terminus": "deepseek-v3.1-terminus",
-    # NVIDIA NIM / build.nvidia.com
+    "hw/v3": "DeepSeek-V3",
+    "hw/v3.2": "DeepSeek-V3.2",
+    "hw/terminus": "deepseek-v3.1-terminus",
+    # ---- NVIDIA NIM (nv/) ----
     "nv/nano": "nvidia/nemotron-3-nano-30b-a3b",
-    "nvidia/nano": "nvidia/nemotron-3-nano-30b-a3b",
-    "nemotron-nano": "nvidia/nemotron-3-nano-30b-a3b",
     "nv/super": "nvidia/nemotron-3-super-120b-a12b",
-    "nvidia/super": "nvidia/nemotron-3-super-120b-a12b",
-    "nemotron-super": "nvidia/nemotron-3-super-120b-a12b",
-    # Additional NIM shortcuts for all public catalog models (including third‑party)
     "nv/ultra": "nvidia/nemotron-3-ultra-550b-a55b",
-    "nv/ultra-free": "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "nv/12b-v2-vl": "nvidia/nemotron-nano-12b-v2-vl:free",
     "nv/9b": "nvidia/nemotron-nano-9b-v2:free",
     "nv/12b": "nvidia/nemotron-nano-12b-v2-vl:free",
-    # Third‑party NIM aliases
-    "llama3-8b": "meta/llama3-8b-instruct",
-    "llama3-70b": "meta/llama3-70b-instruct",
-    "mistral-7b": "mistralai/mistral-7b-instruct-v0.2",
-    "mixtral-8x7b": "mistralai/mixtral-8x7b-instruct-v0.1",
-    "gemma-2-9b": "google/gemma-2-9b",
-    "gemma-2-27b": "google/gemma-2-27b",
-    "phi-3-mini": "microsoft/phi-3-mini-128k-instruct",
-    "phi-3-medium": "microsoft/phi-3-medium-128k-instruct",
+    "nv/llama3-8b": "meta/llama3-8b-instruct",
+    "nv/llama3-70b": "meta/llama3-70b-instruct",
+    "nv/mistral-7b": "mistralai/mistral-7b-instruct-v0.2",
+    "nv/mixtral-8x7b": "mistralai/mixtral-8x7b-instruct-v0.1",
+    "nv/gemma-2-9b": "google/gemma-2-9b",
+    "nv/gemma-2-27b": "google/gemma-2-27b",
+    "nv/phi-3-mini": "microsoft/phi-3-mini-128k-instruct",
+    "nv/phi-3-medium": "microsoft/phi-3-medium-128k-instruct",
+    # ---- OpenRouter (or/) — force OpenRouter even when Huawei/NIM default exists ----
+    "or/flash": "openrouter/deepseek/deepseek-v4-flash",
+    "or/pro": "openrouter/deepseek/deepseek-v4-pro",
+    "or/r1": "openrouter/deepseek/deepseek-r1",
+    "or/glm-5.2": "openrouter/z-ai/glm-5.2",
+    "or/gemma-4-26b": "openrouter/google/gemma-4-26b-a4b-it",
+    "or/qwen3.5-9b": "openrouter/qwen/qwen3.5-9b",
+    "or/ultra-free": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+    "or/nano": "openrouter/nvidia/nemotron-3-nano-30b-a3b",
+    "or/super": "openrouter/nvidia/nemotron-3-super-120b-a12b",
 }
 
 
@@ -220,6 +202,9 @@ def _normalize_huawei_model(model: str) -> str:
 
 def resolve_model(model: str | None) -> str:
     m = (model or "unknown").strip()
+    # or/ prefix → force OpenRouter, never remap to Huawei/NIM
+    if m.lower().startswith("or/"):
+        return MODEL_ALIASES.get(m, MODEL_ALIASES.get(m.lower(), m))
     # Prefer Huawei LiteLLM when Cursor still has deepseek/* / z-ai/glm* selected
     if _prefer_huawei_deepseek() or _huawei_key():
         low = m.lower()
@@ -250,10 +235,19 @@ def resolve_model(model: str | None) -> str:
 
 def detect_provider(model: str) -> str:
     m = model.lower()
+    # or/ prefix → force OpenRouter
+    if m.startswith("or/"):
+        return "openrouter"
+    # openrouter/ prefix → OpenRouter
+    if m.startswith("openrouter/"):
+        return "openrouter"
+    # NVIDIA :free variants → OpenRouter (NIM direct doesn't accept :free)
+    if m.startswith("nvidia/") and m.endswith(":free"):
+        return "openrouter"
     # NVIDIA NIM / build.nvidia.com (keep nvidia/… ids upstream)
     if m.startswith(("nvidia/", "nv/", "nemotron-", "nemotron/")):
         return "nvidia"
-    if m in {x.lower() for x in NVIDIA_MODELS}:
+    if m in {x.lower() for x in NVIDIA_MODELS if not x.endswith(":free")}:
         return "nvidia"
     if m.startswith(("huawei/", "hw/", "modelarts/", "hw-maas", "z-ai/glm")):
         if m.startswith("z-ai/glm") and not _huawei_key():
@@ -294,8 +288,6 @@ def detect_provider(model: str) -> str:
         return "huawei"
     if m.startswith(("xiaomi/", "mimo/", "mimo-")):
         return "xiaomi"
-    if m.startswith("openrouter/"):
-        return "openrouter"
     default = os.environ.get("DEFAULT_PROVIDER", "openrouter").strip().lower()
     if default in {"openrouter", "xiaomi", "huawei", "nvidia"}:
         return default
@@ -316,6 +308,7 @@ def prepare_route(
         "xiaomi/",
         "mimo/",
         "openrouter/",
+        "or/",
         "huawei/",
         "hw/",
         "modelarts/",
