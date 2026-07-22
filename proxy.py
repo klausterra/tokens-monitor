@@ -465,6 +465,8 @@ async def list_models(authorization: str | None = Header(default=None)) -> dict[
         "or/ultra-free",
         "or/nano",
         "or/super",
+        "or/free",
+        "or/auto",
     ):
         data.append({"id": mid, "object": "model", "owned_by": "openrouter"})
     return {"object": "list", "data": data}

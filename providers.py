@@ -106,6 +106,8 @@ MODEL_ALIASES = {
     "or/ultra-free": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
     "or/nano": "openrouter/nvidia/nemotron-3-nano-30b-a3b",
     "or/super": "openrouter/nvidia/nemotron-3-super-120b-a12b",
+    "or/free": "openrouter/openrouter/free",
+    "or/auto": "openrouter/openrouter/auto",
 }
 
 
